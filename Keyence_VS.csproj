@@ -8,5 +8,9 @@
 	<ItemGroup>
 		<None Remove=".git" />
 	</ItemGroup>
+	
+	<ItemGroup>
+		<PackageReference Include="SqliteAppSettings" Version="2024.11.8" />
+	</ItemGroup>
 
 </Project>
