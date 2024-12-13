@@ -4,6 +4,8 @@
     {
         public enum ErrorCode
         {
+            Success = 0,
+
             /// <summary>
             /// Unrecognized command (When the specified command does not exist)
             /// </summary>
@@ -38,6 +40,13 @@
             /// Timeout (when the next input or the end delimiter is not sent within a certain period of time from the input with Ethernet non-procedural communication; the timeout period is 3 seconds.)
             /// </summary>
             Timeout = 07,
+
+            ER = -1,
+            NoConnection = -2,
+            Exception = -3,
+            CommandBusy = -4,
+            CommandTimeout = -5,
+            Unknown = -6,
         }
     }
 }
