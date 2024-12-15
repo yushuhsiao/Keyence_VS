@@ -291,6 +291,10 @@ namespace Keyence
         }
 
         /// <summary>讀取觸發輸入許可狀態</summary>
+        /// <param name="enabled">
+        /// 0 : Enable settings
+        /// 1 : Disable settings
+        /// </param>
         /// <remarks>讀出是否為可輸入觸發的狀態。以取得了指令、I/O端子、Fieldbus狀態的OR的值來判定可輸入觸發的狀態。</remarks>
         public ErrorCode TSR(out bool enabled)
         {
@@ -359,6 +363,10 @@ namespace Keyence
         }
 
         /// <summary>讀出運作/設定模式</summary>
+        /// <param name="mode">
+        /// 0 : 設定模式
+        /// 1 : 運作模式
+        /// </param>
         /// <remarks>讀出目前動作模式（運作模式/設定模式）。</remarks>
         public ErrorCode MOR(out int mode)
         {
@@ -370,22 +378,36 @@ namespace Keyence
         }
 
         /// <summary>輸出禁止</summary>
+        /// <param name="n">
+        /// 0 : 許可
+        /// 1 : 禁止
+        /// </param>
         /// <remarks>控制向外部設備的資料輸出。</remarks>
-        public ErrorCode OD()
+        public ErrorCode OD(int n)
         {
-            Send("OD", out var err, out var res);
+            Send("OD", $",{n}", out var err, out var res);
             return Set("OD", err);
         }
 
         /// <summary>切換偵測程序(編號指定)</summary>
+        /// <param name="d">
+        /// 1 : 內建記憶體
+        /// 2 : SD卡
+        /// </param>
+        /// <param name="nnnn">檢測程序編號（0至999）</param>
         /// <remarks>將目前設定的偵測程式切換為指定記憶體內的偵測程式編號的偵測程式。</remarks>
-        public ErrorCode PL()
+        public ErrorCode PL(int d, int nnnn)
         {
-            Send("PL", out var err, out var res);
+            Send("PL", $",{d},{nnnn}", out var err, out var res);
             return Set("PL", err);
         }
 
         /// <summary>讀出偵測程式(編號指定)</summary>
+        /// <param name="d">
+        /// 1 : 內建記憶體
+        /// 2 : SD卡
+        /// </param>
+        /// <param name="nnnn">檢測程序編號（0至999）</param>
         /// <remarks>傳回目前讀取中的偵測設定的記憶體類別、偵測設定No.。</remarks>
         public ErrorCode PR(out int d, out int nnnn)
         {
@@ -412,50 +434,87 @@ namespace Keyence
         }
 
         /// <summary>切換模板影像（編號指定）</summary>
+        /// <param name="nnnn">
+        /// 工具編號（0至1999，9999）
+        /// 向工具編號指定了9999時，會對全部具有模板影像的工具執行。
+        /// </param>
+        /// <param name="uuu">模板圖號（0至999）</param>
         /// <remarks>將指定工具中使用的模板影像，切換為指定編號的模板影像並更新影像基準資訊。</remarks>
-        public ErrorCode MS()
+        public ErrorCode MS(int nnnn, int uuu)
         {
-            Send("MS", out var err, out var res);
+            Send("MS", $",{nnnn},{uuu}", out var err, out var res);
             return Set("MS", err);
         }
 
         /// <summary>讀出模板影像(編號指定)</summary>
+        /// <param name="nnnn">工具編號（0至1999）</param>
+        /// <param name="uuu">
+        /// 模板影像編號（0至999、65535）
+        /// 未記載所設定模板影像檔案名稱的開頭數字時，將會傳回65535。
+        /// </param>
         /// <remarks>讀出指定工具所使用的模板影像的模板影像編號。</remarks>
-        public ErrorCode MR()
+        public ErrorCode MR(int nnnn, out int uuu)
         {
-            Send("MR", out var err, out var res);
+            if (Send("MR", out var err, out var res))
+            {
+                if (res.TryGetValueAt(1, out var _uuu))
+                {
+                    if (_uuu.ToInt32(out uuu))
+                        return err;
+                    err = ErrorCode.Unknown;
+                }
+            }
+            uuu = default;
             return Set("MR", err);
         }
 
         /// <summary>更新位置補正基準值</summary>
+        /// <param name="nnnn">
+        /// 工具編號（0至1999，9999）
+        /// 指定了9999時，會對所有物件工具執行。
+        /// </param>
         /// <remarks>將指定的［影像位置補正］工具的位置補正基準值，更新為目前參考工具的最新位置資訊。</remarks>
-        public ErrorCode RPU()
+        public ErrorCode RPU(int nnnn)
         {
-            Send("RPU", out var err, out var res);
+            Send("RPU", $",{nnnn}", out var err, out var res);
             return Set("RPU", err);
         }
 
         /// <summary>更新圖形訊息</summary>
+        /// <param name="nnnn">
+        /// nnnn：工具編號（0至1999、9999）
+        /// 向工具編號指定了9999時，會對任務內的全部工具執行。
+        /// </param>
         /// <remarks>使用設定的模板圖像，更新指定工具上註冊的圖形資訊。</remarks>
-        public ErrorCode PDU()
+        public ErrorCode PDU(int nnnn)
         {
-            Send("PDU", out var err, out var res);
+            Send("PDU", $",{nnnn}", out var err, out var res);
             return Set("PDU", err);
         }
 
         /// <summary>回應</summary>
         /// <remarks>對外部設備發送的數值進行直接應答。</remarks>
-        public ErrorCode EC()
+        public ErrorCode EC(string str_in, out string str_out)
         {
-            Send("EC", out var err, out var res);
+            if ( Send("EC", $",{str_in}", out var err, out var res))
+            {
+                if (res.TryGetValueAt(1, out str_out))
+                    return err;
+            }
+            str_out = default;
             return Set("EC", err);
         }
 
         /// <summary>清除錯誤</summary>
+        /// <param name="n">
+        /// n : 錯誤狀態類別（0或1）
+        ///     0 : 清除Error0 Status 與Error0 Code
+        ///     1 : 清除Error1 Status 與Error1 Code
+        /// </param>
         /// <remarks>清除指定類別（Error0或Error1）的錯誤狀態、錯誤代碼。</remarks>
-        public ErrorCode ERC()
+        public ErrorCode ERC(int n)
         {
-            Send("ERC", out var err, out var res);
+            Send("ERC", $",{n}", out var err, out var res);
             return Set("ERC", err);
         }
 
@@ -502,6 +561,7 @@ namespace Keyence
         }
 
         /// <summary>讀出硬體型號</summary>
+        /// <param name="model">設備型號字串（ASCII碼）</param>
         /// <remarks>讀出本機的系統資訊（型號）。</remarks>
         public ErrorCode HMR(out string model)
         {
@@ -516,74 +576,96 @@ namespace Keyence
         }
 
         /// <summary>讀出韌體版本</summary>
+        /// <param name="version">版本的字串（「主版本的第一位.主版本的第二位.次版本的四位」字串。ASCII碼)</param>
         /// <remarks>以「.」字元將主版本的第一位、主版本的第二位、次版本分隔，讀出本機的系統資訊（ROM版本）。</remarks>
-        public ErrorCode FVR()
+        public ErrorCode FVR(out string version)
         {
-            Send("FVR", out var err, out var res);
+            if (Send("FVR", out var err, out var res))
+            {
+                if (res.TryGetValueAt(1, out version))
+                    return err;
+                err = ErrorCode.Unknown;
+            }
+            version = default;
             return Set("FVR", err);
         }
 
         /// <summary>發行外部輸入事件</summary>
+        /// <param name="n">外部輸入事件編號（0至199）</param>
         /// <remarks>發行指定編號的外部輸入事件。</remarks>
-        public ErrorCode SEI()
+        public ErrorCode SEI(int n)
         {
-            Send("SEI", out var err, out var res);
+            Send("SEI", $",{n}", out var err, out var res);
             return Set("SEI", err);
         }
 
         /// <summary>寫入值至儲存格</summary>
+        /// <param name="cc">可視化面板的列編號（1至100）</param>
+        /// <param name="rr">可視化面板的行編號（1至1000）</param>
+        /// <param name="nnnn">設定值</param>
         /// <remarks>寫入指定值到指定行編號、列編號的視覺化面板單元格。</remarks>
-        public ErrorCode CWN()
+        public ErrorCode CWN(int cc, int rr, decimal nnnn)
         {
-            Send("CWN", out var err, out var res);
+            Send("CWN", $",{cc},{rr},{nnnn}", out var err, out var res);
             return Set("CWN", err);
         }
 
         /// <summary>寫入字串至單元格</summary>
+        /// <param name="cc">可視化面板列數（1至100）</param>
+        /// <param name="rr">可視化面板行號（1至1000）</param>
+        /// <param name="ssss">字串</param>
         /// <remarks>寫入指定行編號和列編號的可視化面板單元格指定。</remarks>
-        public ErrorCode CWS()
+        public ErrorCode CWS(int cc, int rr, string ssss)
         {
-            Send("CWS", out var err, out var res);
+            Send("CWS", $",{cc},{rr},\"{ssss}\"", out var err, out var res);
             return Set("CWS", err);
         }
 
         /// <summary>執行工具測試</summary>
+        /// <param name="nnnn">工具編號（0至1999）</param>
         /// <remarks>指定工具使用與前一次執行時相同的影像重新偵測。</remarks>
-        public ErrorCode TT()
+        public ErrorCode TT(int nnnn)
         {
-            Send("TT", out var err, out var res);
+            Send("TT", $",{nnnn}", out var err, out var res);
             return Set("TT", err);
         }
 
         /// <summary>判定字串更新</summary>
+        /// <param name="nnnn">工具編號（0～1999，9999）</param>
         /// <remarks>使用指定工具的最新識別字串，更新該工具的判定字串的內容。</remarks>
-        public ErrorCode JSU()
+        public ErrorCode JSU(int nnnn)
         {
-            Send("JSU", out var err, out var res);
+            Send("JSU", $",{nnnn}", out var err, out var res);
             return Set("JSU", err);
         }
 
         /// <summary>對照用數據更新</summary>
+        /// <param name="nnnn">工具編號（0～1999，9999）</param>
         /// <remarks>使用指定工具的最新讀取數據，更新該工具的對照用數據。</remarks>
-        public ErrorCode CRU()
+        public ErrorCode CRU(int nnnn)
         {
-            Send("CRU", out var err, out var res);
+            Send("CRU", $",{nnnn}", out var err, out var res);
             return Set("CRU", err);
         }
 
         /// <summary>模板影像註冊（編號指定）</summary>
+        /// <param name="nnnn">工具編號（0～1999）</param>
+        /// <param name="uuu">模板影像編號（0～999）</param>
         /// <remarks>將指定工具的最新目前影像，儲存為指定編號的範本影像。</remarks>
-        public ErrorCode MG()
+        public ErrorCode MG(int nnnn, int uuu)
         {
-            Send("MG", out var err, out var res);
+            Send("MG", $",{nnnn},{uuu}", out var err, out var res);
             return Set("MG", err);
         }
 
         /// <summary>寫入邏輯值至儲存格</summary>
+        /// <param name="cc">可視化面板的列編號（1～100)</param>
+        /// <param name="rr">可視化面板的行編號（1～1000)</param>
+        /// <param name="n">邏輯值</param>
         /// <remarks>將指定值寫入視覺化面板中指定列、指定行的儲存格。</remarks>
-        public ErrorCode CWB()
+        public ErrorCode CWB(int cc, int rr, int n)
         {
-            Send("CWB", out var err, out var res);
+            Send("CWB", $",{cc},{rr},{n}", out var err, out var res);
             return Set("CWB", err);
         }
 
@@ -640,18 +722,42 @@ namespace Keyence
         #endregion
 
         /// <summary>清除工具快取</summary>
+        /// <param name="m">
+        /// 工具類別（0～5、9999）
+        ///     0：影像輸出工具
+        ///     1：數據輸出工具
+        ///     2：統計工具
+        ///     3：成品率工具
+        ///     4：數據歷史工具
+        ///     5：資料輸入（無協定）工具
+        ///     為工具類別指定了9999時，會對所有工具類別執行。
+        ///     工具類別0：影像輸出工具中也包含附圖形影像輸出工具。
+        /// </param>
+        /// <param name="nnnn">
+        /// 工具編號（0～1999，9999）
+        ///     0：影像輸出工具
+        ///     1：數據輸出工具
+        ///     5：資料輸入（無協定）工具
+        ///     9999：全部工具
+        /// </param>
         /// <remarks>指定工具類別或編號，清除快取。</remarks>
-        public ErrorCode TBC()
+        public ErrorCode TBC(int m, int nnnn)
         {
-            Send("TBC", out var err, out var res);
+            Send("TBC", $",{m},{nnnn}", out var err, out var res);
             return Set("TBC", err);
         }
 
         /// <summary>複製儲存格值</summary>
+        /// <param name="sc">要複製的起點儲存格的列編號（1～100）</param>
+        /// <param name="sr">要複製的起點儲存格的行編號（1～1000）</param>
+        /// <param name="ec">要複製的終點單元格的列編號（1～100）</param>
+        /// <param name="er">要複製的終點單元格的行編號（1～1000）</param>
+        /// <param name="pc">要貼上的儲存格的列號（1～100）</param>
+        /// <param name="pr">要貼上的儲存格的行編號（1～1000）</param>
         /// <remarks>指定要複製和要貼上的儲存格範圍，複製儲存格值。</remarks>
-        public ErrorCode CCV()
+        public ErrorCode CCV(int sc, int sr, int ec, int er, int pc, int pr)
         {
-            Send("CCV", out var err, out var res);
+            Send("CCV", $",{sc},{sr},{ec},{er},{pc},{pr}", out var err, out var res);
             return Set("CCV", err);
         }
 
@@ -672,16 +778,24 @@ namespace Keyence
         }
 
         /// <summary>匯出儲存格值</summary>
+        /// <param name="nn">文件編號（0～99）</param>
+        /// <param name="sc">起點儲存格的列編號（1～100）</param>
+        /// <param name="sr">起點儲存格的行編號（1～1000）</param>
+        /// <param name="ec">終點單元格的列編號（1～100）</param>
+        /// <param name="er">終點單元格的行編號（1～1000）</param>
         /// <remarks>指定檔案編號和儲存目標範圍，匯出儲存格值。</remarks>
-        public ErrorCode CEV()
+        public ErrorCode CEV(int nn, int sc, int sr, int ec, int er)
         {
             Send("CEV", out var err, out var res);
             return Set("CEV", err);
         }
 
         /// <summary>導入單元格值</summary>
+        /// <param name="nn">文件編號（0～99）</param>
+        /// <param name="pc">匯入位置的儲存格列編號（1～100）</param>
+        /// <param name="pr">匯入位置的儲存格行編號（1～1000）</param>
         /// <remarks>指定檔案編號和要匯入的儲存格的列編號/行編號，匯入儲存格值。</remarks>
-        public ErrorCode CIV()
+        public ErrorCode CIV(int nn, int pc, int pr)
         {
             Send("CIV", out var err, out var res);
             return Set("CIV", err);
