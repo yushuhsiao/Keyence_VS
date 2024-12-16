@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Net;
+using System.Net.Http;
 using System.Net.Sockets;
 using System.Net.WebSockets;
 using System.Runtime.CompilerServices;
@@ -18,18 +19,13 @@ namespace Keyence
 
         private ILogger _logger;
 
-        private Interlocked_Bool _Enabled = new Interlocked_Bool();
-        public bool Enabled { get => _Enabled.Value; set { if (_Enabled.Exchange(value) != value) CloseConnection(); } }
-
         private Interlocked<IPAddress> _IPAddress = new Interlocked<IPAddress>();
-        public IPAddress IPAddress { get => _IPAddress.Value; set { if (!object.Equals(value, _IPAddress.Exchange(value))) CloseConnection(); } }
+        public IPAddress IP { get => _IPAddress.Value; set { if (!object.Equals(value, _IPAddress.Exchange(value))) CloseConnection(); } }
 
         private Interlocked_Int32 _Port = new Interlocked_Int32();
         public int Port { get => _Port.Value; set { if (_Port.Exchange(value) != value) CloseConnection(); } }
 
-        public bool AutoConnect { get; set; } = true;
         public int CommandTimeout { get; set; }
-
 
         public event Action<VS> OnConnected;
         public event Action<VS> OnDisconnected;
@@ -50,8 +46,7 @@ namespace Keyence
         public VS(ILogger<VS> logger)
         {
             _logger = logger;
-            ThreadPool.QueueUserWorkItem(RecvProc);
-            SyncList<object>.Tick += RecvProc;
+            SyncList<object>.Tick += RecvQueueProc;
         }
 
         public void CloseConnection()
@@ -74,17 +69,17 @@ namespace Keyence
             }
         }
 
-        private BusyState connect_busy = new BusyState();
-        private bool ConnectToDevice(out TcpClient tcpClient)
+        public BusyState ConnectBusy { get; } = new BusyState();
+        public bool ConnectToDevice(out TcpClient tcpClient)
         {
             if (connection.GetValue(out tcpClient))
                 if (tcpClient.Connected)
                     return true;
-            using (connect_busy.Enter(out bool busy))
+            using (ConnectBusy.Enter(out bool busy))
             {
                 if (busy) return false;
                 CloseConnection();
-                var ip = this.IPAddress;
+                var ip = this.IP;
                 var port = this.Port;
                 if (ip == null) return false;
                 if (port <= 0) return false;
@@ -99,6 +94,42 @@ namespace Keyence
                         _logger.LogInformation($"{ip}:{port} connected.");
                         try { OnConnected?.Invoke(this); }
                         catch { }
+                        var _tcpClient = tcpClient;
+                        ThreadPool.QueueUserWorkItem(state =>
+                        {
+                            byte[] buff1 = new byte[1024];
+                            StringBuilder buff2 = new StringBuilder();
+                            if (_tcpClient.Connected == false) return;
+                            try
+                            {
+                                using (_tcpClient)
+                                {
+                                    while (_tcpClient.Connected)
+                                    {
+                                        int recv = _tcpClient.Client.Receive(buff1, SocketFlags.None);
+                                        if (recv == 0) break;
+                                        string text = Encoding.ASCII.GetString(buff1, 0, recv);
+                                        foreach (var c in text)
+                                        {
+                                            if (c == '\r' || c == '\n')
+                                            {
+                                                if (buff2.Length > 0)
+                                                {
+                                                    this.recv_data.Enqueue(buff2.ToString());
+                                                    buff2.Clear();
+                                                }
+                                            }
+                                            else
+                                                buff2.Append(c);
+                                        }
+                                    }
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                _logger.LogError(ex, ex.Message);
+                            }
+                        });
                         return true;
                     }
                     else
@@ -116,55 +147,7 @@ namespace Keyence
             }
         }
 
-        private void RecvProc(object state)
-        {
-            byte[] buff1 = new byte[1024];
-            StringBuilder buff2 = new StringBuilder();
-            for (; ; Thread.Sleep(1))
-            {
-                if (Enabled == false)
-                    continue;
-                try
-                {
-                    TcpClient tcpClient;
-                    if (AutoConnect)
-                    {
-                        if (ConnectToDevice(out tcpClient) == false)
-                            continue;
-                    }
-                    else if (connection.GetValue(out tcpClient) == false)
-                        continue;
-                    buff2.Clear();
-                    while (Enabled && tcpClient.Connected)
-                    {
-                        int recv = tcpClient.Client.Receive(buff1, SocketFlags.None);
-                        if (recv == 0) break;
-                        string text = Encoding.ASCII.GetString(buff1, 0, recv);
-                        foreach (var c in text)
-                        {
-                            if (c == '\r' || c == '\n')
-                            {
-                                if (buff2.Length > 0)
-                                {
-                                    this.recv_data.Enqueue(buff2.ToString());
-                                    buff2.Clear();
-                                }
-                            }
-                            else
-                                buff2.Append(c);
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, ex.Message);
-                    CloseConnection();
-                    Thread.Sleep(500);
-                }
-            }
-        }
-
-        private bool RecvProc()
+        private bool RecvQueueProc()
         {
             if (!Monitor.TryEnter(recv_data))
                 return true;
@@ -198,13 +181,11 @@ namespace Keyence
             return true;
         }
 
-
         public bool IsBusy => cmd_request.IsNotNull;
         private Interlocked<string> cmd_request = new Interlocked<string>();
         private Interlocked<string[]> cmd_response = new Interlocked<string[]>();
         private Stopwatch cmd_timer = new Stopwatch();
 
-        public bool Send(string text) => Send(text, null, out var errorCode, out var result);
         public bool Send(string text, out ErrorCode errorCode, out string[] result) => Send(text, null, out errorCode, out result);
         public bool Send(string text, string args, out ErrorCode errorCode, out string[] result)
         {
@@ -312,7 +293,7 @@ namespace Keyence
                 }
             }
             enabled = default;
-            _exit:
+        _exit:
             return Set("TSR", err);
         }
 
@@ -385,7 +366,7 @@ namespace Keyence
         /// <remarks>控制向外部設備的資料輸出。</remarks>
         public ErrorCode OD(int n)
         {
-            Send("OD", $",{n}", out var err, out var res);
+            Send("OD", n.ToString(), out var err, out var res);
             return Set("OD", err);
         }
 
@@ -398,7 +379,7 @@ namespace Keyence
         /// <remarks>將目前設定的偵測程式切換為指定記憶體內的偵測程式編號的偵測程式。</remarks>
         public ErrorCode PL(int d, int nnnn)
         {
-            Send("PL", $",{d},{nnnn}", out var err, out var res);
+            Send("PL", $"{d},{nnnn}", out var err, out var res);
             return Set("PL", err);
         }
 
@@ -442,7 +423,7 @@ namespace Keyence
         /// <remarks>將指定工具中使用的模板影像，切換為指定編號的模板影像並更新影像基準資訊。</remarks>
         public ErrorCode MS(int nnnn, int uuu)
         {
-            Send("MS", $",{nnnn},{uuu}", out var err, out var res);
+            Send("MS", $"{nnnn},{uuu}", out var err, out var res);
             return Set("MS", err);
         }
 
@@ -476,7 +457,7 @@ namespace Keyence
         /// <remarks>將指定的［影像位置補正］工具的位置補正基準值，更新為目前參考工具的最新位置資訊。</remarks>
         public ErrorCode RPU(int nnnn)
         {
-            Send("RPU", $",{nnnn}", out var err, out var res);
+            Send("RPU", nnnn.ToString(), out var err, out var res);
             return Set("RPU", err);
         }
 
@@ -488,7 +469,7 @@ namespace Keyence
         /// <remarks>使用設定的模板圖像，更新指定工具上註冊的圖形資訊。</remarks>
         public ErrorCode PDU(int nnnn)
         {
-            Send("PDU", $",{nnnn}", out var err, out var res);
+            Send("PDU", nnnn.ToString(), out var err, out var res);
             return Set("PDU", err);
         }
 
@@ -496,7 +477,7 @@ namespace Keyence
         /// <remarks>對外部設備發送的數值進行直接應答。</remarks>
         public ErrorCode EC(string str_in, out string str_out)
         {
-            if ( Send("EC", $",{str_in}", out var err, out var res))
+            if (Send("EC", str_in, out var err, out var res))
             {
                 if (res.TryGetValueAt(1, out str_out))
                     return err;
@@ -514,7 +495,7 @@ namespace Keyence
         /// <remarks>清除指定類別（Error0或Error1）的錯誤狀態、錯誤代碼。</remarks>
         public ErrorCode ERC(int n)
         {
-            Send("ERC", $",{n}", out var err, out var res);
+            Send("ERC", n.ToString(), out var err, out var res);
             return Set("ERC", err);
         }
 
@@ -595,7 +576,7 @@ namespace Keyence
         /// <remarks>發行指定編號的外部輸入事件。</remarks>
         public ErrorCode SEI(int n)
         {
-            Send("SEI", $",{n}", out var err, out var res);
+            Send("SEI", n.ToString(), out var err, out var res);
             return Set("SEI", err);
         }
 
@@ -606,7 +587,7 @@ namespace Keyence
         /// <remarks>寫入指定值到指定行編號、列編號的視覺化面板單元格。</remarks>
         public ErrorCode CWN(int cc, int rr, decimal nnnn)
         {
-            Send("CWN", $",{cc},{rr},{nnnn}", out var err, out var res);
+            Send("CWN", $"{cc},{rr},{nnnn}", out var err, out var res);
             return Set("CWN", err);
         }
 
@@ -617,7 +598,7 @@ namespace Keyence
         /// <remarks>寫入指定行編號和列編號的可視化面板單元格指定。</remarks>
         public ErrorCode CWS(int cc, int rr, string ssss)
         {
-            Send("CWS", $",{cc},{rr},\"{ssss}\"", out var err, out var res);
+            Send("CWS", $"{cc},{rr},\"{ssss}\"", out var err, out var res);
             return Set("CWS", err);
         }
 
@@ -626,7 +607,7 @@ namespace Keyence
         /// <remarks>指定工具使用與前一次執行時相同的影像重新偵測。</remarks>
         public ErrorCode TT(int nnnn)
         {
-            Send("TT", $",{nnnn}", out var err, out var res);
+            Send("TT", nnnn.ToString(), out var err, out var res);
             return Set("TT", err);
         }
 
@@ -635,7 +616,7 @@ namespace Keyence
         /// <remarks>使用指定工具的最新識別字串，更新該工具的判定字串的內容。</remarks>
         public ErrorCode JSU(int nnnn)
         {
-            Send("JSU", $",{nnnn}", out var err, out var res);
+            Send("JSU", nnnn.ToString(), out var err, out var res);
             return Set("JSU", err);
         }
 
@@ -644,7 +625,7 @@ namespace Keyence
         /// <remarks>使用指定工具的最新讀取數據，更新該工具的對照用數據。</remarks>
         public ErrorCode CRU(int nnnn)
         {
-            Send("CRU", $",{nnnn}", out var err, out var res);
+            Send("CRU", nnnn.ToString(), out var err, out var res);
             return Set("CRU", err);
         }
 
@@ -654,7 +635,7 @@ namespace Keyence
         /// <remarks>將指定工具的最新目前影像，儲存為指定編號的範本影像。</remarks>
         public ErrorCode MG(int nnnn, int uuu)
         {
-            Send("MG", $",{nnnn},{uuu}", out var err, out var res);
+            Send("MG", $"{nnnn},{uuu}", out var err, out var res);
             return Set("MG", err);
         }
 
@@ -665,7 +646,7 @@ namespace Keyence
         /// <remarks>將指定值寫入視覺化面板中指定列、指定行的儲存格。</remarks>
         public ErrorCode CWB(int cc, int rr, int n)
         {
-            Send("CWB", $",{cc},{rr},{n}", out var err, out var res);
+            Send("CWB", $"{cc},{rr},{n}", out var err, out var res);
             return Set("CWB", err);
         }
 
@@ -743,7 +724,7 @@ namespace Keyence
         /// <remarks>指定工具類別或編號，清除快取。</remarks>
         public ErrorCode TBC(int m, int nnnn)
         {
-            Send("TBC", $",{m},{nnnn}", out var err, out var res);
+            Send("TBC", $"{m},{nnnn}", out var err, out var res);
             return Set("TBC", err);
         }
 
@@ -757,7 +738,7 @@ namespace Keyence
         /// <remarks>指定要複製和要貼上的儲存格範圍，複製儲存格值。</remarks>
         public ErrorCode CCV(int sc, int sr, int ec, int er, int pc, int pr)
         {
-            Send("CCV", $",{sc},{sr},{ec},{er},{pc},{pr}", out var err, out var res);
+            Send("CCV", $"{sc},{sr},{ec},{er},{pc},{pr}", out var err, out var res);
             return Set("CCV", err);
         }
 
