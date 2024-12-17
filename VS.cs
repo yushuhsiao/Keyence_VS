@@ -37,7 +37,7 @@ namespace Keyence
         private Interlocked<TcpClient> connection = new Interlocked<TcpClient>();
         private Queue<string> recv_data = new Queue<string>();
         public Dictionary<string, ErrorCode?> LastErrorCode { get; } = new Dictionary<string, ErrorCode?>();
-        private ErrorCode Set(string name, ErrorCode errorCode)
+        private ErrorCode SetErr(string name, ErrorCode errorCode)
         {
             LastErrorCode[name] = errorCode;
             return errorCode;
@@ -46,7 +46,7 @@ namespace Keyence
         public VS(ILogger<VS> logger)
         {
             _logger = logger;
-            SyncList<object>.Tick += RecvQueueProc;
+            ThreadPool.QueueUserWorkItem(RecvQueueProc);
         }
 
         public void CloseConnection()
@@ -116,6 +116,7 @@ namespace Keyence
                                                 if (buff2.Length > 0)
                                                 {
                                                     this.recv_data.Enqueue(buff2.ToString());
+                                                    receiveEvent.Set();
                                                     buff2.Clear();
                                                 }
                                             }
@@ -147,38 +148,44 @@ namespace Keyence
             }
         }
 
-        private bool RecvQueueProc()
+        private AutoResetEvent receiveEvent = new AutoResetEvent(false);
+        private void RecvQueueProc(object state)
         {
-            if (!Monitor.TryEnter(recv_data))
-                return true;
-            try
+            for (; ; )
             {
-                while (recv_data.TryDequeue(out var text))
+                if (Monitor.TryEnter(recv_data))
                 {
                     try
                     {
-                        if (!text.StartsWith('{'))
+                        while (recv_data.TryDequeue(out var text))
                         {
-                            var txt = text.Split(',');
-                            if (txt.ER() && txt.Get(1).IsEquals(cmd_request.Value))
-                                cmd_response.Value = txt;
-                            else if (txt.Get(0).IsEquals(cmd_request.Value))
-                                cmd_response.Value = txt;
-                            else
+                            try
                             {
-                                ;
+                                if (!text.StartsWith('{'))
+                                {
+                                    var txt = text.Split(',');
+                                    if (txt.ER() && txt.Get(1).IsEquals(cmd_request.Value))
+                                        cmd_response.Value = txt;
+                                    else if (txt.Get(0).IsEquals(cmd_request.Value))
+                                        cmd_response.Value = txt;
+                                    else
+                                    {
+                                        ;
+                                    }
+                                }
                             }
+                            catch (Exception ex) { _logger.LogError(ex, ex.Message); }
+
+                            // invoke event
+                            try { OnReceiveData?.Invoke(this, text); }
+                            catch (Exception ex) { _logger.LogError(ex, ex.Message); }
                         }
                     }
-                    catch (Exception ex) { _logger.LogError(ex, ex.Message); }
-
-                    // invoke event
-                    try { OnReceiveData?.Invoke(this, text); }
-                    catch (Exception ex) { _logger.LogError(ex, ex.Message); }
+                    finally { Monitor.Exit(recv_data); }
                 }
+                try { receiveEvent.WaitOne(5000); }
+                catch { Thread.Sleep(100); }
             }
-            finally { Monitor.Exit(recv_data); }
-            return true;
         }
 
         public bool IsBusy => cmd_request.IsNotNull;
@@ -251,12 +258,11 @@ namespace Keyence
         public ErrorCode TRG()
         {
             if (Send("TRG", out var err, out var res))
-                return ErrorCode.Success;
-
-            if (res.ER(out var err1))
+                return SetErr("TRG", err);
+            else if (res.ER(out var err1))
                 if (err1.ToInt32(out int err2))
-                    return (ErrorCode)err2;
-            return Set("TRG", ErrorCode.Unknown);
+                    err = (ErrorCode)err2;
+            return SetErr("TRG", err);
         }
 
         /// <summary>觸發器輸入禁止</summary>
@@ -268,7 +274,7 @@ namespace Keyence
         public ErrorCode TD(bool enabled)
         {
             Send($"TD", (enabled ? 0 : 1).ToString(), out var err, out var res);
-            return Set("TD", err);
+            return SetErr("TD", err);
         }
 
         /// <summary>讀取觸發輸入許可狀態</summary>
@@ -294,7 +300,7 @@ namespace Keyence
             }
             enabled = default;
         _exit:
-            return Set("TSR", err);
+            return SetErr("TSR", err);
         }
 
         /// <summary>重置</summary>
@@ -316,7 +322,7 @@ namespace Keyence
         public ErrorCode RS()
         {
             Send("RS", out var err, out var res);
-            return Set("RS", err);
+            return SetErr("RS", err);
         }
 
         /// <summary>重新啟動</summary>
@@ -324,7 +330,7 @@ namespace Keyence
         public ErrorCode RB()
         {
             Send("RB", out var err, out var res);
-            return Set("RB", err);
+            return SetErr("RB", err);
         }
 
         /// <summary>遷移至運行模式</summary>
@@ -332,7 +338,7 @@ namespace Keyence
         public ErrorCode RUN()
         {
             Send("RUN", out var err, out var res);
-            return Set("RUN", err);
+            return SetErr("RUN", err);
         }
 
         /// <summary>遷移至設定模式</summary>
@@ -340,7 +346,7 @@ namespace Keyence
         public ErrorCode SET()
         {
             Send("SET", out var err, out var res);
-            return Set("SET", err);
+            return SetErr("SET", err);
         }
 
         /// <summary>讀出運作/設定模式</summary>
@@ -355,7 +361,7 @@ namespace Keyence
                 res.Get(1).ToInt32(out mode);
             else
                 mode = 0;
-            return Set("MOR", err);
+            return SetErr("MOR", err);
         }
 
         /// <summary>輸出禁止</summary>
@@ -367,7 +373,7 @@ namespace Keyence
         public ErrorCode OD(int n)
         {
             Send("OD", n.ToString(), out var err, out var res);
-            return Set("OD", err);
+            return SetErr("OD", err);
         }
 
         /// <summary>切換偵測程序(編號指定)</summary>
@@ -380,7 +386,7 @@ namespace Keyence
         public ErrorCode PL(int d, int nnnn)
         {
             Send("PL", $"{d},{nnnn}", out var err, out var res);
-            return Set("PL", err);
+            return SetErr("PL", err);
         }
 
         /// <summary>讀出偵測程式(編號指定)</summary>
@@ -403,7 +409,7 @@ namespace Keyence
             }
             d = default;
             nnnn = default;
-            return Set("PR", err);
+            return SetErr("PR", err);
         }
 
         /// <summary>保存檢測程序</summary>
@@ -411,7 +417,7 @@ namespace Keyence
         public ErrorCode PS()
         {
             Send("PS", out var err, out var res);
-            return Set("PS", err);
+            return SetErr("PS", err);
         }
 
         /// <summary>切換模板影像（編號指定）</summary>
@@ -424,7 +430,7 @@ namespace Keyence
         public ErrorCode MS(int nnnn, int uuu)
         {
             Send("MS", $"{nnnn},{uuu}", out var err, out var res);
-            return Set("MS", err);
+            return SetErr("MS", err);
         }
 
         /// <summary>讀出模板影像(編號指定)</summary>
@@ -446,7 +452,7 @@ namespace Keyence
                 }
             }
             uuu = default;
-            return Set("MR", err);
+            return SetErr("MR", err);
         }
 
         /// <summary>更新位置補正基準值</summary>
@@ -458,7 +464,7 @@ namespace Keyence
         public ErrorCode RPU(int nnnn)
         {
             Send("RPU", nnnn.ToString(), out var err, out var res);
-            return Set("RPU", err);
+            return SetErr("RPU", err);
         }
 
         /// <summary>更新圖形訊息</summary>
@@ -470,7 +476,7 @@ namespace Keyence
         public ErrorCode PDU(int nnnn)
         {
             Send("PDU", nnnn.ToString(), out var err, out var res);
-            return Set("PDU", err);
+            return SetErr("PDU", err);
         }
 
         /// <summary>回應</summary>
@@ -483,7 +489,7 @@ namespace Keyence
                     return err;
             }
             str_out = default;
-            return Set("EC", err);
+            return SetErr("EC", err);
         }
 
         /// <summary>清除錯誤</summary>
@@ -496,7 +502,7 @@ namespace Keyence
         public ErrorCode ERC(int n)
         {
             Send("ERC", n.ToString(), out var err, out var res);
-            return Set("ERC", err);
+            return SetErr("ERC", err);
         }
 
         /// <summary>日期和時間設定寫入</summary>
@@ -504,7 +510,7 @@ namespace Keyence
         public ErrorCode TW(DateTime time)
         {
             Send("TW", $"{time.Year},{time.Month},{time.Day},{time.Hour},{time.Minute},{time.Second}", out var err, out var res);
-            return Set("TW", err);
+            return SetErr("TW", err);
         }
 
         /// <summary>寫入當前的日期和時間設定</summary>
@@ -530,7 +536,7 @@ namespace Keyence
                 }
                 catch { }
             }
-            return Set("TR", err);
+            return SetErr("TR", err);
         }
 
         /// <summary>清除後台緩存</summary>
@@ -538,7 +544,7 @@ namespace Keyence
         public ErrorCode ICC()
         {
             Send("ICC", out var err, out var res);
-            return Set("ICC", err);
+            return SetErr("ICC", err);
         }
 
         /// <summary>讀出硬體型號</summary>
@@ -553,7 +559,7 @@ namespace Keyence
                 err = ErrorCode.Unknown;
             }
             model = default;
-            return Set("HMR", err);
+            return SetErr("HMR", err);
         }
 
         /// <summary>讀出韌體版本</summary>
@@ -568,7 +574,7 @@ namespace Keyence
                 err = ErrorCode.Unknown;
             }
             version = default;
-            return Set("FVR", err);
+            return SetErr("FVR", err);
         }
 
         /// <summary>發行外部輸入事件</summary>
@@ -577,7 +583,7 @@ namespace Keyence
         public ErrorCode SEI(int n)
         {
             Send("SEI", n.ToString(), out var err, out var res);
-            return Set("SEI", err);
+            return SetErr("SEI", err);
         }
 
         /// <summary>寫入值至儲存格</summary>
@@ -588,7 +594,7 @@ namespace Keyence
         public ErrorCode CWN(int cc, int rr, decimal nnnn)
         {
             Send("CWN", $"{cc},{rr},{nnnn}", out var err, out var res);
-            return Set("CWN", err);
+            return SetErr("CWN", err);
         }
 
         /// <summary>寫入字串至單元格</summary>
@@ -599,7 +605,7 @@ namespace Keyence
         public ErrorCode CWS(int cc, int rr, string ssss)
         {
             Send("CWS", $"{cc},{rr},\"{ssss}\"", out var err, out var res);
-            return Set("CWS", err);
+            return SetErr("CWS", err);
         }
 
         /// <summary>執行工具測試</summary>
@@ -608,7 +614,7 @@ namespace Keyence
         public ErrorCode TT(int nnnn)
         {
             Send("TT", nnnn.ToString(), out var err, out var res);
-            return Set("TT", err);
+            return SetErr("TT", err);
         }
 
         /// <summary>判定字串更新</summary>
@@ -617,7 +623,7 @@ namespace Keyence
         public ErrorCode JSU(int nnnn)
         {
             Send("JSU", nnnn.ToString(), out var err, out var res);
-            return Set("JSU", err);
+            return SetErr("JSU", err);
         }
 
         /// <summary>對照用數據更新</summary>
@@ -626,7 +632,7 @@ namespace Keyence
         public ErrorCode CRU(int nnnn)
         {
             Send("CRU", nnnn.ToString(), out var err, out var res);
-            return Set("CRU", err);
+            return SetErr("CRU", err);
         }
 
         /// <summary>模板影像註冊（編號指定）</summary>
@@ -636,7 +642,7 @@ namespace Keyence
         public ErrorCode MG(int nnnn, int uuu)
         {
             Send("MG", $"{nnnn},{uuu}", out var err, out var res);
-            return Set("MG", err);
+            return SetErr("MG", err);
         }
 
         /// <summary>寫入邏輯值至儲存格</summary>
@@ -647,7 +653,7 @@ namespace Keyence
         public ErrorCode CWB(int cc, int rr, int n)
         {
             Send("CWB", $"{cc},{rr},{n}", out var err, out var res);
-            return Set("CWB", err);
+            return SetErr("CWB", err);
         }
 
         #region Robots
@@ -725,7 +731,7 @@ namespace Keyence
         public ErrorCode TBC(int m, int nnnn)
         {
             Send("TBC", $"{m},{nnnn}", out var err, out var res);
-            return Set("TBC", err);
+            return SetErr("TBC", err);
         }
 
         /// <summary>複製儲存格值</summary>
@@ -739,7 +745,7 @@ namespace Keyence
         public ErrorCode CCV(int sc, int sr, int ec, int er, int pc, int pr)
         {
             Send("CCV", $"{sc},{sr},{ec},{er},{pc},{pr}", out var err, out var res);
-            return Set("CCV", err);
+            return SetErr("CCV", err);
         }
 
         /// <summary>重新連接設備</summary>
@@ -747,7 +753,7 @@ namespace Keyence
         public ErrorCode DRC()
         {
             Send("DRC", out var err, out var res);
-            return Set("DRC", err);
+            return SetErr("DRC", err);
         }
 
         /// <summary>輸出資料初始化</summary>
@@ -755,7 +761,7 @@ namespace Keyence
         public ErrorCode RSOD()
         {
             Send("RSOD", out var err, out var res);
-            return Set("RSOD", err);
+            return SetErr("RSOD", err);
         }
 
         /// <summary>匯出儲存格值</summary>
@@ -768,7 +774,7 @@ namespace Keyence
         public ErrorCode CEV(int nn, int sc, int sr, int ec, int er)
         {
             Send("CEV", out var err, out var res);
-            return Set("CEV", err);
+            return SetErr("CEV", err);
         }
 
         /// <summary>導入單元格值</summary>
@@ -779,7 +785,7 @@ namespace Keyence
         public ErrorCode CIV(int nn, int pc, int pr)
         {
             Send("CIV", out var err, out var res);
-            return Set("CIV", err);
+            return SetErr("CIV", err);
         }
 
     }
