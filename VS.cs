@@ -15,7 +15,8 @@ namespace Keyence
 {
     public partial class VS
     {
-        public delegate void DataHandler(VS sender, string text);
+        public delegate void DataHandler1(VS sender, string text);
+        public delegate void DataHandler2(VS sender, string command, string text);
 
         private ILogger _logger;
 
@@ -29,8 +30,8 @@ namespace Keyence
 
         public event Action<VS> OnConnected;
         public event Action<VS> OnDisconnected;
-        public event DataHandler OnReceiveData;
-        public event DataHandler OnSendData;
+        public event Action<string> OnReceiveData;
+        public event Action<string, string> OnSendData;
 
         public bool IsConnected => connection.Value?.Connected == true;
 
@@ -159,6 +160,7 @@ namespace Keyence
                     {
                         while (recv_data.TryDequeue(out var text))
                         {
+                            _logger.LogDebug(text);
                             try
                             {
                                 if (!text.StartsWith('{'))
@@ -177,7 +179,7 @@ namespace Keyence
                             catch (Exception ex) { _logger.LogError(ex, ex.Message); }
 
                             // invoke event
-                            try { OnReceiveData?.Invoke(this, text); }
+                            try { OnReceiveData?.Invoke(text); }
                             catch (Exception ex) { _logger.LogError(ex, ex.Message); }
                         }
                     }
@@ -189,35 +191,54 @@ namespace Keyence
         }
 
         public bool IsBusy => cmd_request.IsNotNull;
+        public string BusyCommand => cmd_request.Value;
         private Interlocked<string> cmd_request = new Interlocked<string>();
         private Interlocked<string[]> cmd_response = new Interlocked<string[]>();
         private Stopwatch cmd_timer = new Stopwatch();
 
-        public bool Send(string text, out ErrorCode errorCode, out string[] result) => Send(text, null, out errorCode, out result);
-        public bool Send(string text, string args, out ErrorCode errorCode, out string[] result)
+        public struct Response
+        {
+            public bool IsSuccess { get; set; }
+            public ErrorCode ErrorCode { get; set; }
+            public string[] Result { get; set; }
+        }
+
+        public bool Send(string cmd, out ErrorCode errorCode, out string[] result) => Send(cmd, null, out errorCode, out result);
+        public bool Send(string cmd, string args, out ErrorCode errorCode, out string[] result)
         {
             result = null;
             errorCode = ErrorCode.CommandBusy;
-            if (cmd_request.TrySet(text) == false)
-                return false;
+            bool busy = true;
+            for (int i = 0; i < 100; i++)
+            {
+                if (cmd_request.TrySet(cmd))
+                {
+                    busy = false;
+                    break;
+                }
+                Thread.Sleep(1);
+            }
+            if (busy) return false;
 
             cmd_response.Value = null;
             try
             {
-                StringBuilder request = new StringBuilder(text);
+                StringBuilder _text = new StringBuilder(cmd);
                 if (args != null)
                 {
-                    request.Append(',');
-                    request.Append(args);
+                    _text.Append(',');
+                    _text.Append(args);
                 }
-                request.Append('\r');
-                var data = Encoding.ASCII.GetBytes(request.ToString());
+                _text.Append('\r');
+                string text = _text.ToString();
+                _logger.LogDebug(text);
+                var data = Encoding.ASCII.GetBytes(text);
                 errorCode = ErrorCode.NoConnection;
                 if (ConnectToDevice(out var tcpClient) == false)
                     return false;
                 cmd_timer.Restart();
                 int cnt = tcpClient.Client.Send(data);
-                OnSendData?.Invoke(this, text);
+                OnSendData?.Invoke(cmd, text);
                 while (cmd_timer.ElapsedMilliseconds < CommandTimeout)
                 {
                     result = cmd_response.Exchange(null);
@@ -349,6 +370,13 @@ namespace Keyence
             return SetErr("SET", err);
         }
 
+        /// <summary>
+        /// 0 : 設定模式
+        /// 1 : 運作模式
+        /// </summary>
+        public int RunningMode => _RunningMode.Value;
+        private Interlocked_Int32 _RunningMode = new Interlocked_Int32();
+
         /// <summary>讀出運作/設定模式</summary>
         /// <param name="mode">
         /// 0 : 設定模式
@@ -358,7 +386,10 @@ namespace Keyence
         public ErrorCode MOR(out int mode)
         {
             if (Send("MOR", out var err, out var res))
-                res.Get(1).ToInt32(out mode);
+            {
+                if (res.Get(1).ToInt32(out mode))
+                    _RunningMode.Value = mode;
+            }
             else
                 mode = 0;
             return SetErr("MOR", err);
@@ -773,7 +804,7 @@ namespace Keyence
         /// <remarks>指定檔案編號和儲存目標範圍，匯出儲存格值。</remarks>
         public ErrorCode CEV(int nn, int sc, int sr, int ec, int er)
         {
-            Send("CEV", out var err, out var res);
+            Send("CEV", $"{nn},{sc},{sr},{ec},{er}", out var err, out var res);
             return SetErr("CEV", err);
         }
 
@@ -784,7 +815,7 @@ namespace Keyence
         /// <remarks>指定檔案編號和要匯入的儲存格的列編號/行編號，匯入儲存格值。</remarks>
         public ErrorCode CIV(int nn, int pc, int pr)
         {
-            Send("CIV", out var err, out var res);
+            Send("CIV", $"{nn},{pc},{pr}",out var err, out var res);
             return SetErr("CIV", err);
         }
 
