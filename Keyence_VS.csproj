@@ -10,7 +10,7 @@
 	</ItemGroup>
 
 	<ItemGroup>
-	  <PackageReference Include="Tools" Version="2024.12.25" />
+	  <PackageReference Include="Tools" Version="2025.2.18" />
 	</ItemGroup>
 
 </Project>
